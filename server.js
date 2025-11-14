@@ -8,42 +8,48 @@ const XLSX = require('xlsx');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// CORS básico (puedes restringir orígenes más adelante)
+// Habilitar CORS y JSON
 app.use(cors());
 app.use(express.json());
 
-// Carpeta donde guardaremos el último Database subido
+// Carpeta donde guardaremos el último Database
 const DATA_DIR = path.join(__dirname, 'data');
 const DATABASE_PATH = path.join(DATA_DIR, 'Database.xlsm');
 
-// Multer: sube el archivo a una carpeta temporal "uploads/"
+// Multer: sube a carpeta temporal uploads/
 const upload = multer({ dest: path.join(__dirname, 'uploads') });
 
-// Cache en memoria de las filas ya procesadas
+// Cache de filas en memoria
 let cachedRows = null;
 let lastUpdate = null;
 
 // Función para leer el XLSM y convertir la hoja "Database" a JSON
 function loadRowsFromFile(filePath) {
-  const workbook = XLSX.readFile(filePath, { cellDates: true });
+  const wb = XLSX.readFile(filePath, { cellDates: true });
   const sheet =
-    workbook.Sheets['Database'] || workbook.Sheets[workbook.SheetNames[0]];
+    wb.Sheets['Database'] || wb.Sheets[wb.SheetNames[0]];
 
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
   return rows;
 }
 
-// ====== RUTA 1: subir un nuevo Database ======
-app.post('/api/upload-database', upload.single('database'), (req, res) => {
+// ===== RUTA 1: subir Database =====
+app.post('/api/upload-database', upload.single('archivoR'), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
         ok: false,
-        message: 'No se recibió ningún archivo (campo "database").'
+        message: 'No se recibió archivo. Usa el campo "archivoR".'
       });
     }
 
-    // Aseguramos carpeta data/
+    console.log('Archivo recibido:', {
+      nombre: req.file.originalname,
+      tamano_bytes: req.file.size,
+      mimetype: req.file.mimetype
+    });
+
+    // Aseguramos la carpeta data/
     fs.mkdirSync(DATA_DIR, { recursive: true });
 
     // Movemos el archivo temporal a data/Database.xlsm
@@ -54,12 +60,12 @@ app.post('/api/upload-database', upload.single('database'), (req, res) => {
     lastUpdate = new Date().toISOString();
 
     console.log(
-      `Nuevo Database subido. Filas: ${cachedRows.length}, fecha: ${lastUpdate}`
+      `Database procesado. Filas: ${cachedRows.length}, actualizado: ${lastUpdate}`
     );
 
     return res.json({
       ok: true,
-      message: 'Database subido y procesado correctamente.',
+      message: 'Database subido y procesado correctamente en el servidor.',
       rows: cachedRows.length,
       lastUpdate
     });
@@ -73,9 +79,9 @@ app.post('/api/upload-database', upload.single('database'), (req, res) => {
   }
 });
 
-// ====== RUTA 2: obtener las filas ya procesadas ======
+// ===== RUTA 2: obtener las filas procesadas =====
 app.get('/api/database-rows', (req, res) => {
-  try:
+  try {
     // Si no hay cache, intentamos leer desde disco
     if (!cachedRows) {
       if (!fs.existsSync(DATABASE_PATH)) {
@@ -106,7 +112,7 @@ app.get('/api/database-rows', (req, res) => {
   }
 });
 
-// Ruta simple para probar que el server vive
+// Ruta simple de prueba
 app.get('/', (req, res) => {
   res.json({
     ok: true,
@@ -116,5 +122,5 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Servidor CrediaX escuchando en puerto ${PORT}`);
+  console.log(`Servidor CrediaX escuchando en el puerto ${PORT}`);
 });
