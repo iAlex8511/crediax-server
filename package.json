@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "description": "Servidor inicial para CrediaX",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+ "scripts": {
+  "start": "node --max-old-space-size=4096 server.js"
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.0",
