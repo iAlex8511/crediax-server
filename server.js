@@ -1,125 +1,121 @@
-// ========================================
-//  Servidor CrediaX - Node + Express
-// ========================================
+// server.js
+// Servidor CrediaX con procesamiento en segundo plano del Database.xlsm
 
 const express = require('express');
-const multer = require('multer');
-const xlsx = require('xlsx');
 const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs').promises;
+const XLSX = require('xlsx');
 
 const app = express();
-const port = process.env.PORT || 10000;
+const PORT = process.env.PORT || 10000;
 
-// Habilitar CORS para que tu app web pueda llamar al servidor
+// ===== Middlewares base =====
 app.use(cors());
 app.use(express.json());
 
-// ========================================
-//  Configuración de Multer (subida en memoria)
-// ========================================
-
-const storage = multer.memoryStorage();
+// ===== Configuración de subida de archivos (multer) =====
 const upload = multer({
-  storage,
-  // opcional: limitar tamaño, por ejemplo 100MB
-  // limits: { fileSize: 100 * 1024 * 1024 }
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      // Carpeta temporal del contenedor en Render
+      cb(null, '/tmp');
+    },
+    filename: (req, file, cb) => {
+      const timestamp = Date.now();
+      cb(null, `Database-${timestamp}.xlsm`);
+    }
+  }),
+  limits: {
+    // Límite máx. del archivo – puedes subirlo si ves que el Excel crece
+    fileSize: 100 * 1024 * 1024 // 100 MB
+  }
 });
 
-// ========================================
-//  Variables globales para guardar el Database procesado
-// ========================================
-
+// ===== Variables globales en memoria =====
 global.databaseRows = [];
 global.lastUpdate = null;
 
-// ========================================
-//  Endpoint de prueba (root)
-// ========================================
-
-app.get('/', (req, res) => {
-  res.json({
-    ok: true,
-    message: 'Servidor CrediaX funcionando 🚀',
-    lastUpdate: global.lastUpdate,
-    totalRows: global.databaseRows ? global.databaseRows.length : 0
-  });
-});
-
-// ========================================
-//  POST /api/upload-database
-//  Sube el Database.xlsm, lo procesa y lo guarda en memoria
-// ========================================
-
-app.post('/api/upload-database', upload.single('archivoR'), (req, res) => {
+// ===== Función que procesa el Database en segundo plano =====
+async function processDatabase(filePath) {
   try {
-    if (!req.file) {
-      return res
-        .status(400)
-        .json({ ok: false, message: 'No se envió archivo.' });
-    }
+    console.log('➡️  Iniciando procesamiento del archivo:', filePath);
 
-    console.log('>>> Archivo recibido:');
-    console.log('    nombre:', req.file.originalname);
-    console.log('    tamaño_bytes:', req.file.size);
-    console.log('    mimetype:', req.file.mimetype);
+    // Leer buffer del archivo
+    const buffer = await fs.readFile(filePath);
 
-    // Leer el libro de Excel desde el buffer
-    const buffer = req.file.buffer;
-    const workbook = xlsx.read(buffer, { type: 'buffer' });
+    console.log('   Archivo leído, tamaño (bytes):', buffer.length);
 
-    // Intentar encontrar la hoja "Database"
-    let sheet = workbook.Sheets['Database'];
-    if (!sheet) {
-      // Si no existe, tomar la primera hoja
-      const firstName = workbook.SheetNames[0];
-      sheet = workbook.Sheets[firstName];
-      console.warn(
-        `No se encontró hoja "Database", usando la primera hoja: ${firstName}`
-      );
-    }
+    // Leer libro de Excel
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+
+    // Tomar la hoja "Database" o la primera hoja
+    const sheet =
+      workbook.Sheets['Database'] ||
+      workbook.Sheets[workbook.SheetNames[0]];
 
     if (!sheet) {
-      return res.status(400).json({
-        ok: false,
-        message: 'No se pudo encontrar ninguna hoja en el archivo.'
-      });
+      throw new Error('No se encontró la hoja "Database" en el archivo.');
     }
 
-    // Convertir a JSON
-    const rows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
-
-    console.log(`>>> Filas procesadas: ${rows.length}`);
+    // Convertir hoja a JSON
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    console.log('   Filas encontradas:', rows.length);
 
     // Guardar en memoria global
     global.databaseRows = rows;
     global.lastUpdate = new Date().toISOString();
 
-    return res.json({
-      ok: true,
-      message: 'Database subido y procesado correctamente en el servidor.',
-      rows: rows.length,
-      lastUpdate: global.lastUpdate
-    });
+    console.log('✅ Procesamiento completado. Filas cargadas en memoria.');
+
+    // Borrar archivo temporal para liberar espacio
+    try {
+      await fs.unlink(filePath);
+      console.log('   Archivo temporal eliminado:', filePath);
+    } catch (errDel) {
+      console.warn('   No se pudo eliminar el archivo temporal:', errDel.message);
+    }
   } catch (err) {
-    console.error('Error procesando archivo:', err);
-    return res.status(500).json({
+    console.error('🔥 Error procesando Database:', err);
+  }
+}
+
+// ===== Endpoint: subir Database.xlsm (se procesa en segundo plano) =====
+app.post('/api/upload-database', upload.single('archivoR'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({
       ok: false,
-      message: 'Error procesando el archivo en el servidor.',
-      error: err.message
+      message: 'No se recibió ningún archivo con el campo "archivoR".'
     });
   }
+
+  console.log('📁 Archivo recibido:', {
+    path: req.file.path,
+    originalName: req.file.originalname,
+    size: req.file.size
+  });
+
+  // Responder RÁPIDO al cliente (Postman / panel privado)
+  res.json({
+    ok: true,
+    message: 'Archivo recibido. Se está procesando en el servidor en segundo plano.',
+    filename: req.file.originalname,
+    size: req.file.size
+  });
+
+  // Procesar en segundo plano (sin esperar para responder)
+  processDatabase(req.file.path).catch((err) => {
+    console.error('🔥 Error en el procesamiento en background:', err);
+  });
 });
 
-// ========================================
-//  GET /api/clientes
-//  Devuelve la base procesada que está en memoria
-// ========================================
-
+// ===== Endpoint: obtener datos ya procesados =====
 app.get('/api/clientes', (req, res) => {
   if (!global.databaseRows || global.databaseRows.length === 0) {
-    return res
-      .status(404)
-      .json({ ok: false, message: 'No hay datos cargados en el servidor.' });
+    return res.status(404).json({
+      ok: false,
+      message: 'No hay datos cargados en el servidor.'
+    });
   }
 
   res.json({
@@ -130,10 +126,17 @@ app.get('/api/clientes', (req, res) => {
   });
 });
 
-// ========================================
-//  Arrancar servidor
-// ========================================
+// ===== Endpoint simple para probar que el server está vivo =====
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    message: 'Servidor CrediaX en línea 🚀',
+    hasData: !!(global.databaseRows && global.databaseRows.length),
+    lastUpdate: global.lastUpdate
+  });
+});
 
-app.listen(port, () => {
-  console.log(`Servidor CrediaX escuchando en el puerto ${port}`);
+// ===== Arrancar servidor =====
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor CrediaX escuchando en el puerto ${PORT}`);
 });
