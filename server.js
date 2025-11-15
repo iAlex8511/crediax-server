@@ -1,115 +1,98 @@
-// server.js
-// Servidor CrediaX con procesamiento en segundo plano del Database.xlsm
+// server.js – Servidor CrediaX
 
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const fs = require('fs').promises;
 const XLSX = require('xlsx');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ===== Middlewares base =====
+// Middleware básico
 app.use(cors());
 app.use(express.json());
 
-// ===== Configuración de subida de archivos (multer) =====
+// ----------------- Multer (subida de archivo en memoria) -----------------
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      // Carpeta temporal del contenedor en Render
-      cb(null, '/tmp');
-    },
-    filename: (req, file, cb) => {
-      const timestamp = Date.now();
-      cb(null, `Database-${timestamp}.xlsm`);
-    }
-  }),
+  storage: multer.memoryStorage(),
   limits: {
-    // Límite máx. del archivo – puedes subirlo si ves que el Excel crece
-    fileSize: 100 * 1024 * 1024 // 100 MB
+    fileSize: 200 * 1024 * 1024 // hasta 200 MB por si tu Database crece
   }
 });
 
-// ===== Variables globales en memoria =====
+// Variables globales para guardar la base ya procesada
 global.databaseRows = [];
 global.lastUpdate = null;
 
-// ===== Función que procesa el Database en segundo plano =====
-async function processDatabase(filePath) {
-  try {
-    console.log('➡️  Iniciando procesamiento del archivo:', filePath);
-
-    // Leer buffer del archivo
-    const buffer = await fs.readFile(filePath);
-
-    console.log('   Archivo leído, tamaño (bytes):', buffer.length);
-
-    // Leer libro de Excel
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
-
-    // Tomar la hoja "Database" o la primera hoja
-    const sheet =
-      workbook.Sheets['Database'] ||
-      workbook.Sheets[workbook.SheetNames[0]];
-
-    if (!sheet) {
-      throw new Error('No se encontró la hoja "Database" en el archivo.');
-    }
-
-    // Convertir hoja a JSON
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-    console.log('   Filas encontradas:', rows.length);
-
-    // Guardar en memoria global
-    global.databaseRows = rows;
-    global.lastUpdate = new Date().toISOString();
-
-    console.log('✅ Procesamiento completado. Filas cargadas en memoria.');
-
-    // Borrar archivo temporal para liberar espacio
-    try {
-      await fs.unlink(filePath);
-      console.log('   Archivo temporal eliminado:', filePath);
-    } catch (errDel) {
-      console.warn('   No se pudo eliminar el archivo temporal:', errDel.message);
-    }
-  } catch (err) {
-    console.error('🔥 Error procesando Database:', err);
-  }
-}
-
-// ===== Endpoint: subir Database.xlsm (se procesa en segundo plano) =====
-app.post('/api/upload-database', upload.single('archivoR'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({
-      ok: false,
-      message: 'No se recibió ningún archivo con el campo "archivoR".'
-    });
-  }
-
-  console.log('📁 Archivo recibido:', {
-    path: req.file.path,
-    originalName: req.file.originalname,
-    size: req.file.size
-  });
-
-  // Responder RÁPIDO al cliente (Postman / panel privado)
+// ----------------- Endpoint simple de prueba -----------------
+app.get('/', (req, res) => {
   res.json({
     ok: true,
-    message: 'Archivo recibido. Se está procesando en el servidor en segundo plano.',
-    filename: req.file.originalname,
-    size: req.file.size
-  });
-
-  // Procesar en segundo plano (sin esperar para responder)
-  processDatabase(req.file.path).catch((err) => {
-    console.error('🔥 Error en el procesamiento en background:', err);
+    message: 'Servidor CrediaX funcionando 🚀',
+    clientesEndpoint: '/api/clientes',
+    uploadEndpoint: '/api/upload-database'
   });
 });
 
-// ===== Endpoint: obtener datos ya procesados =====
+// ----------------- SUBIR Database.xlsm -----------------
+app.post('/api/upload-database', upload.single('archivoR'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        ok: false,
+        message: 'No se recibió ningún archivo. El campo debe llamarse "archivoR".'
+      });
+    }
+
+    console.log('Archivo recibido:', {
+      nombre: req.file.originalname,
+      'tamaño_bytes': req.file.size,
+      mimetype: req.file.mimetype
+    });
+
+    // Leer el buffer del archivo con XLSX
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+
+    // Buscar una hoja llamada "Database" o tomar la primera
+    const sheetName =
+      workbook.SheetNames.includes('Database')
+        ? 'Database'
+        : workbook.SheetNames[0];
+
+    const sheet = workbook.Sheets[sheetName];
+
+    if (!sheet) {
+      return res.status(400).json({
+        ok: false,
+        message: `No se encontró la hoja "Database" en el archivo.`
+      });
+    }
+
+    // Convertir a JSON (cada fila un objeto)
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    global.databaseRows = rows;
+    global.lastUpdate = new Date().toISOString();
+
+    console.log(`Base procesada. Filas: ${rows.length}`);
+
+    return res.json({
+      ok: true,
+      message: 'Database subido y procesado correctamente en el servidor.',
+      rows: rows.length,
+      lastUpdate: global.lastUpdate
+    });
+  } catch (err) {
+    console.error('Error procesando el Excel:', err);
+    return res.status(500).json({
+      ok: false,
+      message: 'Error interno al procesar el archivo en el servidor.',
+      error: err.message || String(err)
+    });
+  }
+});
+
+// ----------------- CONSULTAR CLIENTES -----------------
 app.get('/api/clientes', (req, res) => {
   if (!global.databaseRows || global.databaseRows.length === 0) {
     return res.status(404).json({
@@ -126,17 +109,7 @@ app.get('/api/clientes', (req, res) => {
   });
 });
 
-// ===== Endpoint simple para probar que el server está vivo =====
-app.get('/', (req, res) => {
-  res.json({
-    ok: true,
-    message: 'Servidor CrediaX en línea 🚀',
-    hasData: !!(global.databaseRows && global.databaseRows.length),
-    lastUpdate: global.lastUpdate
-  });
-});
-
-// ===== Arrancar servidor =====
+// ----------------- Arrancar servidor -----------------
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor CrediaX escuchando en el puerto ${PORT}`);
+  console.log(`Servidor CrediaX escuchando en el puerto ${PORT}`);
 });
